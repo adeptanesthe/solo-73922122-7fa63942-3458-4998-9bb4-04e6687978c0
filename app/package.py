@@ -129,8 +129,13 @@ def build_package(result: dict, X: np.ndarray, generation: int) -> tuple[bytes, 
     return package, json.loads(manifest_bytes)
 
 
-def _verify_package(zip_bytes: bytes, W, X, protected, rank_limit) -> None:
-    """Re-open the archive and self-test the exported factors."""
+def load_factors_from_zip(zip_bytes: bytes) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Read ``B`` and ``A`` back from a published package.
+
+    This is deliberately a fresh read of the bytes that are downloadable, not
+    a reuse of any in-memory factors.  It is used by the candidate-count
+    verification, which must score with exactly what the package exports.
+    """
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
             names = set(zf.namelist())
@@ -140,8 +145,32 @@ def _verify_package(zip_bytes: bytes, W, X, protected, rank_limit) -> None:
             B = np.load(io.BytesIO(zf.read("B.npy")), allow_pickle=False)
             A = np.load(io.BytesIO(zf.read("A.npy")), allow_pickle=False)
             manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-    except (zipfile.BadZipFile, ValueError, KeyError, OSError) as exc:
-        raise PackageVerificationError(f"打包产物无法重新读取：{exc}") from exc
+    except PackageVerificationError:
+        raise
+    except (zipfile.BadZipFile, ValueError, KeyError, OSError, TypeError) as exc:
+        raise PackageVerificationError(f"无法从下载包读回因子：{exc}") from exc
+
+    try:
+        B = np.asarray(B, dtype=np.float64)
+        A = np.asarray(A, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise PackageVerificationError(f"下载包内的因子不是数值矩阵：{exc}") from exc
+    if B.ndim != 2 or A.ndim != 2:
+        raise PackageVerificationError("下载包内的因子不是二维矩阵")
+    if B.shape[1] != A.shape[0]:
+        raise PackageVerificationError("下载包内的因子共享维度不一致")
+    if not np.all(np.isfinite(B)) or not np.all(np.isfinite(A)):
+        raise PackageVerificationError("下载包内的因子含有 NaN 或无穷值")
+    if not isinstance(manifest, dict):
+        raise PackageVerificationError("下载包内的 manifest 不是 JSON 对象")
+    if not isinstance(manifest.get("generation"), int):
+        raise PackageVerificationError("下载包内的 manifest 缺少整数包版本 generation")
+    return B, A, manifest
+
+
+def _verify_package(zip_bytes: bytes, W, X, protected, rank_limit) -> None:
+    """Re-open the archive and self-test the exported factors."""
+    B, A, manifest = load_factors_from_zip(zip_bytes)
 
     if B.ndim != 2 or A.ndim != 2:
         raise PackageVerificationError("导出的因子不是二维矩阵")

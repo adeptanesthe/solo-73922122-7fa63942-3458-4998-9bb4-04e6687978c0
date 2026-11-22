@@ -32,6 +32,29 @@ class PublishedPackage:
     protected_indices: list[int]
     input_fingerprint: str
 
+    @property
+    def sha256(self) -> str:
+        """Content hash of the downloadable ZIP.
+
+        Candidate verification is bound to this hash, so a different package
+        that happens to reuse an in-memory generation can never be accepted.
+        """
+        return hashlib.sha256(self.data).hexdigest()
+
+
+@dataclass
+class VerificationResult:
+    """A candidate-count verification bound to one package generation."""
+
+    generation: int
+    package_sha256: str
+    input_fingerprint: str
+    activation_index: int
+    epsilon: float
+    pairs: list[tuple[int, float]]
+    outcome: dict
+    created_at: str
+
 
 @dataclass
 class Session:
@@ -47,7 +70,16 @@ class Session:
     generation: int = 0
     last_error: Optional[dict] = None
     last_notice: Optional[dict] = None
-    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # Candidate-count verification.  ``state_epoch`` changes whenever the
+    # loaded inputs or the published package change; an in-flight solve that
+    # started under an older epoch is discarded instead of being displayed.
+    verification: Optional[VerificationResult] = None
+    verification_error: Optional[dict] = None
+    verification_draft: Optional[dict] = None
+    verification_running: Optional[int] = None
+    verification_job: int = 0
+    state_epoch: int = 0
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def adapters_ready(self) -> bool:
         return all(m is not None for m in (self.B1, self.A1, self.B2, self.A2))
@@ -57,6 +89,52 @@ class Session:
 
     def inputs_ready(self) -> bool:
         return self.adapters_ready() and self.activations_ready()
+
+    def combined_update(self) -> Optional[np.ndarray]:
+        if not self.adapters_ready():
+            return None
+        return self.B1 @ self.A1 + self.B2 @ self.A2
+
+    def invalidate_verification(self, reason: str) -> None:
+        """Withdraw any stored result and discard in-flight solves.
+
+        Incrementing ``state_epoch`` is what makes a solve that is still
+        running fail its final currency check.
+        """
+        self.state_epoch += 1
+        self.verification = None
+        self.verification_error = None
+        self.verification_running = None
+        self.verification_job += 1
+        if reason == "upload":
+            self.verification_draft = None
+
+    def begin_verification_attempt(self) -> int:
+        """Supersede the previous attempt and return the new job id.
+
+        The old conclusion described a different request (different activation,
+        epsilon or candidate set), so it is withdrawn rather than left next to
+        the new one.  Any still-running solve also loses its job id and will be
+        discarded when it finishes.
+        """
+        self.verification_job += 1
+        self.verification_running = None
+        self.verification = None
+        self.verification_error = None
+        return self.verification_job
+
+    def verification_is_current(self) -> bool:
+        result = self.verification
+        if result is None or self.published is None:
+            return False
+        if self.package_is_stale():
+            return False
+        return (
+            result.generation == self.published.generation
+            and result.package_sha256 == self.published.sha256
+            and result.input_fingerprint == self.input_fingerprint()
+            and result.input_fingerprint == self.published.input_fingerprint
+        )
 
     def layer_dims(self):
         if not self.adapters_ready():
@@ -84,6 +162,23 @@ class Session:
             self.published is not None
             and self.published.input_fingerprint != self.input_fingerprint()
         )
+
+    def verification_summary(self) -> Optional[dict]:
+        if self.verification is None:
+            return None
+        return {
+            "generation": self.verification.generation,
+            "package_sha256": self.verification.package_sha256,
+            "input_fingerprint": self.verification.input_fingerprint,
+            "activation_index": self.verification.activation_index,
+            "epsilon": self.verification.epsilon,
+            "candidate_count": self.verification.outcome["candidate_count"],
+            "k": self.verification.outcome["k"],
+            "previous_k": self.verification.outcome["previous_k"],
+            "created_at": self.verification.created_at,
+            "current": self.verification_is_current(),
+            "outcome": self.verification.outcome,
+        }
 
     def summary(self) -> dict:
         dims = self.layer_dims()
@@ -114,6 +209,10 @@ class Session:
             },
             "last_error": self.last_error,
             "last_notice": self.last_notice,
+            "verification": self.verification_summary(),
+            "verification_error": self.verification_error,
+            "verification_draft": self.verification_draft,
+            "verification_running": self.verification_running is not None,
         }
 
 

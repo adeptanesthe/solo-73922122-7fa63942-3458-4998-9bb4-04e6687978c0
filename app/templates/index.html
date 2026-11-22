@@ -65,6 +65,19 @@
     footer { max-width: 1040px; margin: 0 auto; padding: 0 18px 40px; color: var(--muted); font-size: 12.5px; }
     .hint { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
     .inline-form { display: inline; }
+    .verify-grid { display: grid; grid-template-columns: 44px 110px 150px 1fr; gap: 8px;
+      align-items: center; margin-top: 8px; }
+    .verify-grid .head { font-size: 11.5px; color: var(--muted); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .04em; }
+    .verify-grid input[type=number] { width: 100%; }
+    .verify-grid .slot { color: var(--muted); font-size: 12.5px; }
+    select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+      font-size: 14px; background: #fff; max-width: 100%; }
+    .score-table td.num, .score-table th.num { text-align: right; font-family: ui-monospace, Menlo, monospace; }
+    .top-row { background: #f0f7ff; }
+    .badge-k { display: inline-block; font-size: 26px; font-weight: 700; color: var(--accent);
+      line-height: 1; padding-right: 6px; }
+    .missed { color: #96271c; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -214,6 +227,121 @@
     {% else %}
       <p class="muted">尚未生成下载包。成功计算一次合并后，这里会出现下载按钮。</p>
       {% if download_error %}<div class="banner err">{{ download_error }}</div>{% endif %}
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2><span class="step">4</span>候选数核定</h2>
+
+    {% if session.verification_error %}
+      <div class="banner err">
+        <strong>核定未完成。</strong>{{ session.verification_error.message }}
+        {% if session.verification_error.generation %}
+          <span class="muted">（针对第 {{ session.verification_error.generation }} 版包的这次请求）</span>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    {% if not session.published %}
+      <p class="muted">还没有已发布的下载包。先成功计算一次合并，再核定候选数。</p>
+    {% elif session.published.stale %}
+      <p class="muted">当前下载包是这批输入之前的版本（输入已变更、尚未重算），
+        旧结论已撤下。请先重新计算合并，再核定候选数。</p>
+    {% else %}
+      <p class="hint" style="margin-top:0">
+        用两份原适配器的合计更新 W = B₁A₁ + B₂A₂ 与从 ZIP 读回的合并因子，
+        对同一条激活分别打分。词分数 = 底座分数 + 对应输出行的 LoRA 响应；
+        浮动上限 ε 为各坐标共用。合并版并列时按最不利名次计。
+      </p>
+
+      <form method="post" action="/verify">
+        <label class="field" style="margin-top:12px">选择一条已载入的激活</label>
+        <select name="activation_index" required>
+          {% set draft = session.verification_draft %}
+          {% for row in activations %}
+          <option value="{{ row.index }}"
+            {% if draft and draft.activation_index == row.index %}selected{% endif %}>
+            #{{ row.index }} · {{ row.preview }}（‖x‖={{ "%.3g"|format(row.norm) }}）
+          </option>
+          {% endfor %}
+        </select>
+
+        <label class="field" style="margin-top:12px">浮动上限 ε（各坐标共用，非负）</label>
+        <input type="number" name="epsilon" min="0" step="any" required
+               value="{{ draft.epsilon if draft else '0' }}">
+
+        <label class="field" style="margin-top:14px">候选词（2～8 个：输出行号 + 固定底座分数）</label>
+        <div class="verify-grid">
+          <span class="head">序号</span><span class="head">输出行号</span>
+          <span class="head">底座分数</span><span class="head"></span>
+          {% for slot in range(verify_slots) %}
+            {% set pair = draft.pairs[slot] if draft and draft.pairs|length > slot else none %}
+            <span class="slot">{{ slot + 1 }}</span>
+            <input type="number" name="candidate_row" min="0" step="1"
+                   placeholder="行号" value="{{ pair[0] if pair else '' }}">
+            <input type="number" name="candidate_base" step="any"
+                   placeholder="底座分数" value="{{ pair[1] if pair else '' }}">
+            <span></span>
+          {% endfor %}
+        </div>
+        <p class="hint">留空的行会被忽略；只填一半会报错。至少填 2 个、最多 8 个，行号不可重复。</p>
+
+        <div class="actions">
+          <button type="submit">核定候选数</button>
+          <span class="muted" style="font-size:12.5px">只核定当前这版包（第 {{ session.published.generation }} 版）；重新载入输入或成功换包会撤下结论。</span>
+        </div>
+      </form>
+
+      {% if session.verification_running %}
+        <div class="banner warn">正在用当前这版包求解……<a href="/">刷新</a>查看结果。</div>
+        <meta http-equiv="refresh" content="1">
+      {% endif %}
+
+      {% if session.verification %}
+        {% set v = session.verification %}
+        {% if not v.current %}
+          <div class="banner warn">该核定结论已过期（对应第 {{ v.generation }} 版包，或输入已变更），仅作历史参考。</div>
+        {% else %}
+          <div class="banner ok">
+            <span class="badge-k">k = {{ v.outcome.k }}</span>
+            <strong>浮动范围内原版 {{ v.outcome.top_rows|length }} 个最高分词全部能进入合并版前 {{ v.outcome.k }} 名。</strong>
+            <div class="hint" style="margin-top:4px">
+              激活 #{{ v.activation_index }}，ε = {{ "%.6g"|format(v.epsilon) }}，
+              包版本：第 {{ v.generation }} 版（sha256 {{ v.package_sha256[:12] }}…）。
+              少于 {{ v.outcome.k }} 个候选就会漏词{% if v.outcome.k == 1 %}（k = 1 时不会漏）{% endif %}。
+            </div>
+          </div>
+
+          <table class="score-table" style="margin-top:10px">
+            <tr>
+              <th>#</th><th>输出行</th><th class="num">底座</th>
+              <th class="num">原版分数</th><th class="num">合并版分数</th>
+              <th class="num">原版最高分</th><th class="num">合并版最不利名次</th>
+            </tr>
+            {% for c in v.outcome.candidates %}
+            <tr class="{% if c.is_original_top %}top-row{% endif %}">
+              <td class="mono">{{ c.position }}</td>
+              <td class="mono">{{ c.row }}</td>
+              <td class="num">{{ "%.6g"|format(c.base_score) }}</td>
+              <td class="num">{{ "%.6g"|format(c.original_score) }}</td>
+              <td class="num">{{ "%.6g"|format(c.merged_score) }}</td>
+              <td>{{ "是" if c.is_original_top else "否" }}</td>
+              <td class="num">{{ c.rank }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+
+          {% if v.outcome.k > 1 %}
+            <div class="banner err" style="margin-top:12px">
+              <strong>k − 1 = {{ v.outcome.previous_k }} 时会漏掉的激活与词号：</strong>
+              激活 #{{ v.activation_index }}；
+              输出行 {{ v.outcome.missed_rows|join('、') }}（候选位 {{ v.outcome.missed_candidates|map(attribute='position')|join('、') }}）。
+            </div>
+          {% else %}
+            <p class="hint">k = 1，不给出 k−1 的漏词清单（无正数候选数可比较）。</p>
+          {% endif %}
+        {% endif %}
+      {% endif %}
     {% endif %}
   </section>
 
