@@ -1,0 +1,7 @@
+.git
+.scratch
+__pycache__
+*.pyc
+.pytest_cache
+demo
+*.zip

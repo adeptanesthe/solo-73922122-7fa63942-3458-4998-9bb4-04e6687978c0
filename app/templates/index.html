@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LoRA 单层适配器合并</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #ffffff; --ink: #1c2430; --muted: #5b6675;
+      --line: #d9dee5; --accent: #1f6feb; --accent-ink: #fff;
+      --ok-bg: #e8f5ec; --ok-line: #2f8f4e; --err-bg: #fdecec; --err-line: #c0392b;
+      --warn-bg: #fff7e6; --warn-line: #b7791f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink);
+      font: 15px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+    header { background: #0d1b2a; color: #e7edf5; padding: 18px 24px; }
+    header h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: .01em; }
+    header p { margin: 4px 0 0; color: #9fb0c3; font-size: 13px; }
+    main { max-width: 1040px; margin: 0 auto; padding: 22px 18px 60px; }
+    .grid { display: grid; gap: 18px; }
+    @media (min-width: 900px) { .grid.two { grid-template-columns: 1fr 1fr; } }
+    section.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+    section.card h2 { margin: 0 0 12px; font-size: 15px; font-weight: 650; }
+    section.card h2 .step { display: inline-block; min-width: 22px; height: 22px; line-height: 22px;
+      text-align: center; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+      font-size: 12px; margin-right: 8px; }
+    fieldset { border: 1px dashed var(--line); border-radius: 8px; padding: 12px; margin: 0 0 12px; }
+    legend { font-size: 13px; color: var(--muted); padding: 0 6px; }
+    label.field { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 3px; }
+    input[type=file] { width: 100%; font-size: 13px; padding: 6px; border: 1px solid var(--line);
+      border-radius: 6px; background: #fbfcfd; }
+    input[type=number] { width: 110px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font-size: 14px; }
+    button { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 7px;
+      padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    button.secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+    button:disabled { background: #b8c2ce; cursor: not-allowed; }
+    .banner { border-radius: 8px; padding: 10px 13px; font-size: 13.5px; margin: 14px 0; border: 1px solid; }
+    .banner.ok { background: var(--ok-bg); border-color: var(--ok-line); }
+    .banner.err { background: var(--err-bg); border-color: var(--err-line); }
+    .banner.warn { background: var(--warn-bg); border-color: var(--warn-line); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    td.mono, code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    .muted { color: var(--muted); }
+    .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13.5px; }
+    .kv dt { color: var(--muted); }
+    .kv dd { margin: 0; }
+    .checkbox-list { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+    .checkbox-list label { display: flex; align-items: center; gap: 9px; padding: 7px 10px;
+      border-bottom: 1px solid #eef1f4; font-size: 13px; cursor: pointer; }
+    .checkbox-list label:last-child { border-bottom: 0; }
+    .checkbox-list label:hover { background: #f4f7fb; }
+    .checkbox-list .idx { font-weight: 650; min-width: 30px; }
+    .checkbox-list .prev { color: var(--muted); font-family: ui-monospace, Menlo, monospace;
+      font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    .tag { display: inline-block; font-size: 11.5px; padding: 2px 8px; border-radius: 99px;
+      background: #eef2f7; color: var(--muted); border: 1px solid var(--line); }
+    .tag.ok { background: var(--ok-bg); color: #1f6f3a; border-color: #b9dfc6; }
+    .tag.warn { background: var(--warn-bg); color: #8a5a14; border-color: #e8cf9c; }
+    .tag.err { background: var(--err-bg); color: #96271c; border-color: #efb9b3; }
+    .stale-note { font-size: 13px; color: #8a5a14; }
+    footer { max-width: 1040px; margin: 0 auto; padding: 0 18px 40px; color: var(--muted); font-size: 12.5px; }
+    .hint { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
+    .inline-form { display: inline; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>LoRA 单层适配器合并</h1>
+  <p>把两份 LoRA 更新合并为一份；在所选激活上响应与原更新完全一致，并在此约束下最小化 Frobenius 距离。</p>
+</header>
+<main class="grid">
+
+  {% if error or session.last_error %}
+    <div class="banner err">
+      <strong>未生成新下载包。</strong>
+      {{ error or session.last_error.message }}
+      {% if session.last_error and session.last_error.kind == 'infeasible' %}
+        <div style="margin-top:6px">
+          当前保护项需要的最低可行秩为 <strong>{{ session.last_error.min_rank }}</strong>，
+          而你填写的是 {{ session.last_error.requested_rank }}。
+          请把秩上限调到至少 {{ session.last_error.min_rank }}，或减少勾选的激活后重算。
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+  {% if notice or session.last_notice %}
+    <div class="banner ok">{{ notice or session.last_notice.message }}</div>
+  {% endif %}
+
+  {% if session.published %}
+    {% if session.published.stale %}
+      <div class="banner warn">
+        已发布的下载包（第 {{ session.published.generation }} 版）是在当前上传的输入或参数之前的版本生成的。
+        重新计算成功后才会替换它；在此之前下载的仍是原包。
+      </div>
+    {% endif %}
+  {% endif %}
+
+  <section class="card">
+    <h2><span class="step">1</span>上传权重与激活</h2>
+    <form method="post" action="/upload" enctype="multipart/form-data">
+      <div class="grid two">
+        <fieldset>
+          <legend>适配器 1</legend>
+          <label class="field">整包文件（.npz / .json，键含 A、B）</label>
+          <input type="file" name="adapter1_bundle" accept=".npz,.json,.npy">
+          <p class="hint">或分别上传两个因子：</p>
+          <label class="field">B 因子（out×r，.npy / .csv / .txt）</label>
+          <input type="file" name="adapter1_b" accept=".npy,.csv,.txt">
+          <label class="field">A 因子（r×in）</label>
+          <input type="file" name="adapter1_a" accept=".npy,.csv,.txt">
+        </fieldset>
+        <fieldset>
+          <legend>适配器 2</legend>
+          <label class="field">整包文件（.npz / .json，键含 A、B）</label>
+          <input type="file" name="adapter2_bundle" accept=".npz,.json,.npy">
+          <p class="hint">或分别上传两个因子：</p>
+          <label class="field">B 因子（out×r，.npy / .csv / .txt）</label>
+          <input type="file" name="adapter2_b" accept=".npy,.csv,.txt">
+          <label class="field">A 因子（r×in）</label>
+          <input type="file" name="adapter2_a" accept=".npy,.csv,.txt">
+        </fieldset>
+      </div>
+      <label class="field">激活矩阵（每列一个向量，行数 = 层输入维度；.npy / .csv / .txt）</label>
+      <input type="file" name="activations" accept=".npy,.csv,.txt,.npz,.json">
+      <div class="actions">
+        <button type="submit">载入</button>
+        <span class="muted" style="font-size:12.5px">层输入/输出维度均不超过 32。</span>
+      </div>
+    </form>
+  </section>
+
+  {% if session.adapters_ready %}
+  <section class="card">
+    <h2><span class="step">2</span>选择秩上限与保护项</h2>
+    <dl class="kv">
+      <dt>目标层</dt><dd class="mono">{{ session.layer_input_dim }} → {{ session.layer_output_dim }}</dd>
+      <dt>两份适配器秩</dt><dd class="mono">{{ session.adapter_ranks[0] }}、{{ session.adapter_ranks[1] }}（共享维度将 ≤ 你填的秩上限）</dd>
+      <dt>激活向量数</dt><dd>{{ session.activation_count }}</dd>
+    </dl>
+    <form method="post" action="/merge">
+      <label class="field" style="margin-top:14px">秩上限（A、B 的共享维度不得超过它）</label>
+      <input type="number" name="rank_limit" min="0" max="128" step="1"
+             value="{{ session.rank_limit }}" required>
+      <p class="hint">秩不够时不会替换下载包，页面会给出当前保护项的最低可行秩。</p>
+
+      <label class="field" style="margin-top:14px">必须保住响应的激活（勾选）</label>
+      {% if activations %}
+      <div class="checkbox-list">
+        {% for row in activations %}
+        <label>
+          <input type="checkbox" name="protected" value="{{ row.index }}"
+                 {% if row.index in session.protected_indices %}checked{% endif %}>
+          <span class="idx">#{{ row.index }}</span>
+          <span class="prev">{{ row.preview }}</span>
+          <span class="tag">‖x‖={{ "%.3g"|format(row.norm) }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">请先在第 1 步上传激活向量。</p>
+      {% endif %}
+
+      <div class="actions">
+        <button type="submit" {% if not activations %}disabled{% endif %}>计算并（成功后）替换下载包</button>
+        <span class="muted" style="font-size:12.5px">改秩上限或勾选后重算；失败时保留已有下载包。</span>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+
+  <section class="card">
+    <h2><span class="step">3</span>下载包</h2>
+    {% if session.published %}
+      <div class="actions" style="margin-top:0">
+        <a href="/download"><button type="button">下载 ZIP（第 {{ session.published.generation }} 版）</button></a>
+        {% if session.published.stale %}
+          <span class="tag warn">输入已变更，尚未重算</span>
+        {% else %}
+          <span class="tag ok">与当前输入一致</span>
+        {% endif %}
+      </div>
+      <dl class="kv" style="margin-top:14px">
+        <dt>本次秩上限</dt><dd class="mono">{{ session.published.rank_limit }}</dd>
+        <dt>共享维度</dt><dd class="mono">{{ session.published.shared_dim }}</dd>
+        <dt>保护项</dt><dd class="mono">
+          {% if session.published.protected_indices %}
+            {{ session.published.protected_indices | join(', ') }}
+          {% else %}（无）{% endif %}
+        </dd>
+        <dt>生成时间</dt><dd class="mono">{{ session.published.created_at }}</dd>
+        <dt>包大小</dt><dd class="mono">{{ session.published.size_bytes }} bytes</dd>
+      </dl>
+      <p class="hint">包内含 B.npy、A.npy、manifest.json（记录本次秩上限与保护项）与 README.txt。</p>
+      {% if session.published.manifest and session.published.manifest.metrics %}
+      <table style="margin-top:12px">
+        <tr><th>指标</th><th>值</th></tr>
+        <tr><td>保护激活上的最大绝对响应偏差</td>
+            <td class="mono">{{ "%.3e"|format(session.published.manifest.metrics.response_max_abs_error_on_protected) }}</td></tr>
+        <tr><td>Frobenius 距离 ‖BA − W‖_F</td>
+            <td class="mono">{{ "%.6g"|format(session.published.manifest.metrics.frobenius_distance) }}</td></tr>
+        <tr><td>相对 Frobenius 误差</td>
+            <td class="mono">{{ "%.4f"|format(session.published.manifest.metrics.frobenius_relative) }}</td></tr>
+        <tr><td>原更新 ‖W‖_F</td>
+            <td class="mono">{{ "%.6g"|format(session.published.manifest.metrics.original_update_norm) }}</td></tr>
+        <tr><td>该保护项的最低可行秩</td>
+            <td class="mono">{{ session.published.manifest.metrics.minimum_feasible_rank }}</td></tr>
+      </table>
+      {% endif %}
+    {% else %}
+      <p class="muted">尚未生成下载包。成功计算一次合并后，这里会出现下载按钮。</p>
+      {% if download_error %}<div class="banner err">{{ download_error }}</div>{% endif %}
+    {% endif %}
+  </section>
+
+</main>
+<footer>
+  B 为 out×r，A 为 r×in；原更新 W = B₁A₁ + B₂A₂。合并结果在勾选的激活上精确满足 B(AX)=WX（浮点容差内），
+  并在该约束下最小化 ‖BA−W‖<sub>F</sub>。
+</footer>
+</body>
+</html>
